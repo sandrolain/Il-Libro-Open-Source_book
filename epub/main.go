@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,7 +12,6 @@ import (
 
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	epub "github.com/go-shiori/go-epub"
-	img64 "github.com/tenkoh/goldmark-img64"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	"github.com/yuin/goldmark/extension"
@@ -51,16 +51,10 @@ func main() {
 
 	mdPath := "../docs/it"
 
-	actPath, err := os.Getwd()
-	if err != nil {
-		panic(err)
-	}
-
 	cv := goldmark.New(
 		goldmark.WithExtensions(
 			extension.Table,
 			&frontmatter.Extender{},
-			img64.Img64,
 			highlighting.NewHighlighting(
 				highlighting.WithStyle("monokai"),
 				highlighting.WithFormatOptions(
@@ -73,13 +67,20 @@ func main() {
 		goldmark.WithRendererOptions(
 			html.WithXHTML(),
 			html.WithUnsafe(),
-			img64.WithPathResolver(func(s string) string {
-				return strings.Replace(s, "/book", actPath+"/..", 1)
-			}),
 		),
 	)
 
 	chapters, err := getChapters(&cv, mdPath)
+	if err != nil {
+		panic(err)
+	}
+
+	actPath, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+
+	err = addImages(book, chapters, actPath)
 	if err != nil {
 		panic(err)
 	}
@@ -96,7 +97,37 @@ func main() {
 	}
 }
 
-func createChapters(book *epub.Epub, chapters []Chapter, cssPath string, parent string) error {
+func addImages(book *epub.Epub, chapters []*Chapter, actPath string) (err error) {
+	passedImages := map[string]string{}
+	for _, chapter := range chapters {
+		for _, image := range chapter.Images {
+			intPath, ok := passedImages[image]
+			if !ok {
+				fsPath := strings.Replace(image, "/book", actPath+"/..", 1)
+				fileName := strings.ReplaceAll(strings.TrimLeft(image, "/"), "/", "_")
+				intPath, err = book.AddImage(fsPath, fileName)
+				if err != nil {
+					err = fmt.Errorf("failed to add image %s: %w", fsPath, err)
+					return
+				}
+				passedImages[image] = intPath
+			}
+
+			// Replace the image path in the HTML content
+			chapter.Html = strings.ReplaceAll(chapter.Html, image, intPath)
+		}
+
+		if len(chapter.Children) > 0 {
+			err = addImages(book, chapter.Children, actPath)
+			if err != nil {
+				return
+			}
+		}
+	}
+	return nil
+}
+
+func createChapters(book *epub.Epub, chapters []*Chapter, cssPath string, parent string) error {
 	for _, chapter := range chapters {
 		// Add a chapter
 		baseName := ""
@@ -137,7 +168,8 @@ type Chapter struct {
 	Meta     ChapterMeta
 	Content  string
 	Html     string
-	Children []Chapter
+	Children []*Chapter
+	Images   []string
 }
 
 type ChapterMeta struct {
@@ -145,7 +177,7 @@ type ChapterMeta struct {
 	Order int    `yaml:"nav_order"`
 }
 
-func getChapters(cv *goldmark.Markdown, mdPath string) (list []Chapter, err error) {
+func getChapters(cv *goldmark.Markdown, mdPath string) (list []*Chapter, err error) {
 	// Read markdown files from the directory
 	files, err := fs.ReadDir(os.DirFS(mdPath), ".")
 	if err != nil {
@@ -164,6 +196,16 @@ func getChapters(cv *goldmark.Markdown, mdPath string) (list []Chapter, err erro
 			tempContent = regexp.MustCompile(`\{:[^}]*\}`).ReplaceAllString(tempContent, "")
 			tempContent = strings.ReplaceAll(tempContent, "- TOC", "")
 			content = []byte(tempContent)
+
+			// Find all images paths
+			images := []string{}
+			re := regexp.MustCompile(`!\[.*?\]\((.*?)\)`)
+			matches := re.FindAllSubmatch(content, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					images = append(images, string(match[1]))
+				}
+			}
 
 			ctx := parser.NewContext()
 			var buf bytes.Buffer
@@ -187,8 +229,9 @@ func getChapters(cv *goldmark.Markdown, mdPath string) (list []Chapter, err erro
 			ch := Chapter{
 				Filename: fileName,
 				Meta:     meta,
-				//Content:  string(content),
-				Html: html,
+				Content:  string(content),
+				Html:     html,
+				Images:   images,
 			}
 
 			// Add children chapters if any
@@ -201,11 +244,11 @@ func getChapters(cv *goldmark.Markdown, mdPath string) (list []Chapter, err erro
 				ch.Children = children
 			}
 
-			list = append(list, ch)
+			list = append(list, &ch)
 		}
 	}
 
-	slices.SortFunc(list, func(a, b Chapter) int {
+	slices.SortFunc(list, func(a, b *Chapter) int {
 		return a.Meta.Order - b.Meta.Order
 	})
 

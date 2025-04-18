@@ -5,7 +5,6 @@ go 1.24.1
 require (
 	github.com/alecthomas/chroma/v2 v2.16.0
 	github.com/go-shiori/go-epub v1.2.1
-	github.com/tenkoh/goldmark-img64 v0.1.2
 	github.com/yuin/goldmark v1.7.8
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	go.abhg.dev/goldmark/frontmatter v0.2.0
